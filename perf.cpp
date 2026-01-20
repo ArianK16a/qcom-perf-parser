@@ -2,8 +2,11 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
+// #include <nlohmann/json.hpp>
+#include "json.hpp"
 #include "tinyxml2.h"
 
+using nlohmann::json;
 using namespace tinyxml2;
 
 std::string trim(const std::string& str) {
@@ -50,6 +53,79 @@ struct pair_hash {
         return h1 ^ h2;  // Combine the two hashes
     }
 };
+
+std::string getPowerHintName(const Config& config) {
+    HintKey key{config.id, config.type, config.fps};
+    auto it = kHintToPowerHint.find(key);
+    if (it == kHintToPowerHint.end()) {
+        return {};  // or some default, or throw/ignore
+    }
+    return it->second;
+}
+
+std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
+    const int cluster = res.getCluster();
+
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
+        if (cluster == 0) return "CPUBoostMinFreqBig";
+        if (cluster == 1) return "CPUBoostMinFreqLittle";
+        if (cluster == 2) return "CPUBoostMinFreqPrime";
+    }
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+        if (cluster == 0) return "CPUBoostMaxFreqBig";
+        if (cluster == 1) return "CPUBoostMaxFreqLittle";
+        if (cluster == 2) return "CPUBoostMaxFreqPrime";
+    }
+
+    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
+        if (cluster == 0) return "WaltAdaptiveHighFreqBig";
+        if (cluster == 1) return "WaltAdaptiveHighFreqLittle";
+        if (cluster == 2) return "WaltAdaptiveHighFreqPrime";
+    }
+    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
+        if (cluster == 0) return "WaltAdaptiveLowFreqBig";
+        if (cluster == 1) return "WaltAdaptiveLowFreqLittle";
+        if (cluster == 2) return "WaltAdaptiveLowFreqPrime";
+    }
+
+
+    // Fallback: derive name from path (replace / with _ etc.)
+    std::string name = rc.node;
+    for (auto& ch : name) {
+        if (ch == '/')
+            ch = '_';
+        else if (ch == '-')
+            ch = '_';
+    }
+    return name;
+}
+
+std::string makeNodePath(const Resource& res, const ResourceConfig& rc) {
+    const int cluster = res.getCluster();
+
+    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
+        return "/sys/devices/system/cpu/cpufreq/policy" +
+               std::to_string(clusterToCpuIndex(cluster)) + "/walt/adaptive_high_freq";
+    }
+    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
+        return "/sys/devices/system/cpu/cpufreq/policy" +
+               std::to_string(clusterToCpuIndex(cluster)) + "/walt/adaptive_low_freq";
+    }
+
+    return rc.node;
+}
+
+std::string makeValueString(const Resource& res, const ResourceConfig& rc) {
+    int v = res.value;
+    const int cluster = res.getCluster();
+
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
+        rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+        return std::to_string(clusterToCpuIndex(cluster)) + ":" + std::to_string(v);
+    }
+
+    return std::to_string(v);
+}
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -235,6 +311,91 @@ int main(int argc, char* argv[]) {
         }
         std::cout << std::endl;
     }
+
+    json nodesJson = json::array();
+    json actionsJson = json::array();
+
+    std::map<std::string, NodeInfo> nodeTable;  // name -> NodeInfo
+
+    for (const Config& config : perfBoostStruct.configs) {
+        if (!config.enable) {
+            continue;
+        }
+
+        std::string powerHint = getPowerHintName(config);
+        if (powerHint.empty()) {
+            // Unknown (id, type, fps) -> skip this config
+            continue;
+        }
+
+        const int duration = config.timeout;  // Duration = timeout
+
+        for (const auto& res : config.resources) {
+            auto key = std::make_pair(res.getMajor(), res.getMinor());
+            auto rcIt = resourceMap.find(key);
+            if (rcIt == resourceMap.end()) {
+                continue;  // unknown resource, skip
+            }
+
+            const ResourceConfig& rc = rcIt->second;
+            if (!rc.supported) {
+                continue;  // skip unsupported
+            }
+
+            std::string nodeName = makeNodeName(res, rc);
+            std::string nodePath = makeNodePath(res, rc);
+            std::string valueStr = makeValueString(res, rc);
+
+            // Update / create NodeInfo
+            NodeInfo& n = nodeTable[nodeName];
+            if (n.name.empty()) {
+                n.name = nodeName;
+                n.path = nodePath;
+                n.defaultIndex = 0;    // or customize
+                n.resetOnInit = true;  // or customize
+            } else {
+                // Sanity check: same name should not change path
+                if (n.path != nodePath) {
+                    std::cerr << "Warning: node " << nodeName
+                              << " has conflicting paths: " << n.path << " vs " << nodePath
+                              << std::endl;
+                }
+            }
+            n.values.insert(valueStr);
+
+            // Create Action entry
+            json action;
+            action["PowerHint"] = powerHint;
+            action["Node"] = nodeName;
+            action["Duration"] = duration;
+            action["Value"] = valueStr;
+            actionsJson.push_back(action);
+        }
+    }
+
+    for (const auto& [name, info] : nodeTable) {
+        json node;
+        node["Name"] = info.name;
+        node["Path"] = info.path;
+
+        json valuesJson = json::array();
+        for (const auto& v : info.values) {
+            valuesJson.push_back(v);
+        }
+        node["Values"] = valuesJson;
+
+        node["DefaultIndex"] = info.defaultIndex;
+        node["ResetOnInit"] = info.resetOnInit;
+
+        nodesJson.push_back(node);
+    }
+
+    json jsonRoot;
+    jsonRoot["Nodes"] = nodesJson;
+    jsonRoot["Actions"] = actionsJson;
+
+    // Pretty-print
+    std::cout << jsonRoot.dump(2) << std::endl;
 
     return 0;
 }

@@ -1,3 +1,4 @@
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -166,3 +167,49 @@ struct ResourceConfig {
     // TODO disp mode
     std::string node;
 };
+
+struct HintKey {
+    int id;
+    int type;
+    int fps;
+
+    bool operator==(const HintKey& other) const noexcept {
+        return id == other.id && type == other.type && fps == other.fps;
+    }
+};
+
+struct HintKeyHash {
+    std::size_t operator()(const HintKey& k) const noexcept {
+        std::size_t h1 = std::hash<int>()(k.id);
+        std::size_t h2 = std::hash<int>()(k.type);
+        std::size_t h3 = std::hash<int>()(k.fps);
+        return ((h1 ^ (h2 << 1)) >> 1) ^ (h3 << 1);
+    }
+};
+
+static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
+        {{0x00001080, 1, 120}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
+        {{0x00001081, 10, -1}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        // { { another_id, another_type, another_fps }, "LAUNCH" },
+};
+
+struct NodeInfo {
+    std::string name;
+    std::string path;
+    std::set<std::string> values;
+    int defaultIndex = 0;
+    bool resetOnInit = true;
+};
+
+int clusterToCpuIndex(int cluster) {
+    switch (cluster) {
+        case 0:
+            return 4;  // big
+        case 1:
+            return 0;  // little
+        case 2:
+            return 7;  // prime
+        default:
+            return 99;
+    }
+}
