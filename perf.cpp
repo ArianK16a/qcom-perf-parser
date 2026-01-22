@@ -83,7 +83,7 @@ std::string getPowerHintName(const PerfBoost& boost) {
 }
 
 std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
-    const int cluster = res.getCluster();
+    const int cluster = res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
         if (cluster == 0) return "CPUBoostMinFreqBig";
@@ -119,7 +119,7 @@ std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
 }
 
 std::string makeNodePath(const Resource& res, const ResourceConfig& rc) {
-    const int cluster = res.getCluster();
+    const int cluster = res.cluster;
 
     if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
         return "/sys/devices/system/cpu/cpufreq/policy" +
@@ -135,7 +135,7 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc) {
 
 std::string makeValueString(const Resource& res, const ResourceConfig& rc) {
     int v = res.value;
-    const int cluster = res.getCluster();
+    const int cluster = res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
         rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
@@ -174,7 +174,7 @@ int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoost
 
             for (uint32_t j = 0; j < numParsedValues; j += 2) {
                 if (j + 1 < numParsedValues) {  // Ensure there are pairs available.
-                    Resource resource{mConfigTable[j], mConfigTable[j + 1]};
+                    Resource resource = Resource(mConfigTable[j], mConfigTable[j + 1]);
                     boost.resources.push_back(resource);
                 } else {
                     std::cout << "Missing value for opcode: " << mConfigTable[j] << std::endl;
@@ -351,12 +351,12 @@ int main(int argc, char* argv[]) {
                   << "FPS: " << boost.fps << std::endl;
 
         for (const auto& res : boost.resources) {
-            auto key = std::make_pair(res.getMajor(), res.getMinor());
+            auto key = std::make_pair(res.major, res.minor);
             std::cout << std::format("(0x{:x}, 0x{:x})", resourceMap[key].major,
                                      resourceMap[key].minor)
                       << " -> value: " << res.value << " on \"" << resourceMap[key].node << "\""
                       << ", cluster: "
-                      << res.getCluster()
+                      << res.cluster
                       //   << " on core: " << res.getCore()
                       << (resourceMap[key].supported ? "" : " UNSUPPORTED") << std::endl;
         }
@@ -385,7 +385,7 @@ int main(int argc, char* argv[]) {
         const int duration = boost.timeout;
 
         for (const auto& res : boost.resources) {
-            auto key = std::make_pair(res.getMajor(), res.getMinor());
+            auto key = std::make_pair(res.major, res.minor);
             auto rcIt = resourceMap.find(key);
             if (rcIt == resourceMap.end()) {
                 continue;
@@ -445,25 +445,4 @@ int main(int argc, char* argv[]) {
     std::cout << jsonRoot.dump(2) << std::endl;
 
     return 0;
-}
-
-ResourceType Resource::getType() const {
-    // TODO how to detect other types?
-    return SINGLE_NODE;
-}
-
-int Resource::getMajor() const {
-    return (this->opcode & EXTRACT_MAJOR_TYPE) >> SHIFT_BIT_MAJOR_TYPE;
-}
-
-int Resource::getMinor() const {
-    return (this->opcode & EXTRACT_MINOR_TYPE) >> SHIFT_BIT_MINOR_TYPE;
-}
-
-int Resource::getCluster() const {
-    return (this->opcode & EXTRACT_CLUSTER) >> SHIFT_BIT_CLUSTER;
-}
-
-int Resource::getCore() const {
-    return (this->opcode & EXTRACT_CORE) >> SHIFT_BIT_CORE;
 }

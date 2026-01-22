@@ -135,13 +135,28 @@ enum ResourceType {
 
 class Resource {
   public:
+    Resource(int opcode, int value)
+        : opcode(opcode),
+          value(value),
+          version((opcode & EXTRACT_VERSION) >> SHIFT_BIT_VERSION),
+          mapping((opcode & EXTRACT_MAP_TYPE) >> SHIFT_BIT_MAP),
+          major((opcode & EXTRACT_MAJOR_TYPE) >> SHIFT_BIT_MAJOR_TYPE),
+          minor((opcode & EXTRACT_MINOR_TYPE) >> SHIFT_BIT_MINOR_TYPE),
+          cluster((opcode & EXTRACT_CLUSTER) >> SHIFT_BIT_CLUSTER),
+          core((opcode & EXTRACT_CORE) >> SHIFT_BIT_CORE),
+          mpamIndex((opcode & EXTRACT_MPAM_INDEX)) {}
+
     int opcode;
     int value;
-    ResourceType getType() const;
-    int getMajor() const;
-    int getMinor() const;
-    int getCluster() const;
-    int getCore() const;
+
+    // ResourceType type;
+    int version;
+    int mapping;
+    int major;
+    int minor;
+    int cluster;
+    int core;
+    int mpamIndex;
 };
 
 struct PerfBoost {
