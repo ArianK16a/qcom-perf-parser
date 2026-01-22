@@ -55,8 +55,8 @@ struct pair_hash {
 };
 
 static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
-        {{0x00001080, 1, 120}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
-        {{0x00001081, 10, -1}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        {{0x00001080, 1, 120, "volcano"}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
+        {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
@@ -74,7 +74,7 @@ int clusterToCpuIndex(int cluster) {
 }
 
 std::string getPowerHintName(const PerfBoost& boost) {
-    HintKey key{boost.id, boost.type, boost.fps};
+    HintKey key{boost.id, boost.type, boost.fps, boost.target};
     auto it = kHintToPowerHint.find(key);
     if (it == kHintToPowerHint.end()) {
         return {};  // or some default, or throw/ignore

@@ -184,9 +184,10 @@ struct HintKey {
     int id;
     int type;
     int fps;
+    std::string target;
 
     bool operator==(const HintKey& other) const noexcept {
-        return id == other.id && type == other.type && fps == other.fps;
+        return id == other.id && type == other.type && fps == other.fps && target == other.target;
     }
 };
 
@@ -195,7 +196,9 @@ struct HintKeyHash {
         std::size_t h1 = std::hash<int>()(k.id);
         std::size_t h2 = std::hash<int>()(k.type);
         std::size_t h3 = std::hash<int>()(k.fps);
-        return ((h1 ^ (h2 << 1)) >> 1) ^ (h3 << 1);
+        std::size_t h4 = std::hash<std::string>()(k.target);
+        // idc
+        return h1 ^ h2 ^ h3 ^ h4;
     }
 };
 
