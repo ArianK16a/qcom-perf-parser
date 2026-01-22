@@ -54,8 +54,27 @@ struct pair_hash {
     }
 };
 
-std::string getPowerHintName(const Config& config) {
-    HintKey key{config.id, config.type, config.fps};
+static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
+        {{0x00001080, 1, 120}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
+        {{0x00001081, 10, -1}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        // { { another_id, another_type, another_fps }, "LAUNCH" },
+};
+
+int clusterToCpuIndex(int cluster) {
+    switch (cluster) {
+        case 0:
+            return 4;  // big
+        case 1:
+            return 0;  // little
+        case 2:
+            return 7;  // prime
+        default:
+            return 99;
+    }
+}
+
+std::string getPowerHintName(const PerfBoost& boost) {
+    HintKey key{boost.id, boost.type, boost.fps};
     auto it = kHintToPowerHint.find(key);
     if (it == kHintToPowerHint.end()) {
         return {};  // or some default, or throw/ignore
@@ -87,7 +106,6 @@ std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
         if (cluster == 1) return "WaltAdaptiveLowFreqLittle";
         if (cluster == 2) return "WaltAdaptiveLowFreqPrime";
     }
-
 
     // Fallback: derive name from path (replace / with _ etc.)
     std::string name = rc.node;
@@ -127,40 +145,10 @@ std::string makeValueString(const Resource& res, const ResourceConfig& rc) {
     return std::to_string(v);
 }
 
-int main(int argc, char* argv[]) {
-    if (argc != 4) {
-        std::cout << "usage: ./perf perfboostsconfig.xml commonresourceconfigs.xml "
-                     "targetresourceconfigs.xml"
-                  << std::endl;
-        return 0;
-    }
-
-    XMLDocument doc;
-    doc.LoadFile(argv[1]);
-
-    if (doc.Error()) {
-        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
-        return -1;
-    }
-
-    XMLElement* root = doc.FirstChildElement(BOOSTS_CONFIGS_XML_ROOT);
-    if (!root) {
-        std::cerr << "No root element found." << std::endl;
-        return -1;
-    }
-
-    XMLElement* perfBoost = root->FirstChildElement(BOOSTS_CONFIGS_XML_CHILD_CONFIG);
-
-    if (!perfBoost) {
-        std::cerr << "No PerfBoost element found." << std::endl;
-        return -1;
-    }
-
-    PerfBoost perfBoostStruct;
-
-    XMLElement* configElement = perfBoost->FirstChildElement(BOOSTS_CONFIGS_XML_ELEM_CONFIG_TAG);
+int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoosts) {
+    XMLElement* configElement = configs->FirstChildElement(BOOSTS_CONFIGS_XML_ELEM_CONFIG_TAG);
     while (configElement) {
-        Config config;
+        PerfBoost boost;
 
         const char* id = configElement->Attribute(BOOSTS_CONFIGS_XML_ELEM_ID_TAG);
         const char* type = configElement->Attribute(BOOSTS_CONFIGS_XML_ELEM_TYPE_TAG);
@@ -170,13 +158,13 @@ int main(int argc, char* argv[]) {
         const char* kernel = configElement->Attribute(BOOSTS_CONFIGS_XML_ELEM_KERNEL_TAG);
         const char* fpsStr = configElement->Attribute(BOOSTS_CONFIGS_XML_ELEM_FPS_TAG);
 
-        config.id = id ? strtol(id, nullptr, 16) : -1;
-        config.type = type ? atoi(type) : -1;
-        config.enable = (enable && strcmp(enable, "true") == 0);
-        config.timeout = timeout ? atoi(timeout) : -1;
-        config.target = target ? target : "UNSET";
-        config.kernel = kernel ? kernel : "UNSET";
-        config.fps = fpsStr ? atoi(fpsStr) : -1;
+        boost.id = id ? strtol(id, nullptr, 16) : -1;
+        boost.type = type ? atoi(type) : -1;
+        boost.enable = (enable && strcmp(enable, "true") == 0);
+        boost.timeout = timeout ? atoi(timeout) : -1;
+        boost.target = target ? target : "UNSET";
+        boost.kernel = kernel ? kernel : "UNSET";
+        boost.fps = fpsStr ? atoi(fpsStr) : -1;
 
         const char* resourcesStr = configElement->Attribute("Resources");
         if (resourcesStr) {
@@ -187,55 +175,92 @@ int main(int argc, char* argv[]) {
             for (uint32_t j = 0; j < numParsedValues; j += 2) {
                 if (j + 1 < numParsedValues) {  // Ensure there are pairs available.
                     Resource resource{mConfigTable[j], mConfigTable[j + 1]};
-                    config.resources.push_back(resource);
+                    boost.resources.push_back(resource);
                 } else {
                     std::cout << "Missing value for opcode: " << mConfigTable[j] << std::endl;
                 }
             }
         }
 
-        perfBoostStruct.configs.push_back(config);
+        perfBoosts->push_back(boost);
         configElement = configElement->NextSiblingElement(BOOSTS_CONFIGS_XML_ELEM_CONFIG_TAG);
     }
+
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    XMLDocument doc;
+    XMLElement* element;
+    std::vector<PerfBoost> perfBoosts;
+    std::unordered_map<std::pair<int, int>, ResourceConfig, pair_hash> resourceMap;
+
+    if (argc != 4) {
+        std::cout << "usage: ./perf perfboostsconfig.xml commonresourceconfigs.xml "
+                     "targetresourceconfigs.xml"
+                  << std::endl;
+        return 0;
+    }
+
+    //////////////////////////
+    // perfboostsconfig.xml //
+    //////////////////////////
+    doc.LoadFile(argv[1]);
+    if (doc.Error()) {
+        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
+        return -1;
+    }
+
+    element = doc.FirstChildElement(BOOSTS_CONFIGS_XML_ROOT);
+    if (!element) {
+        std::cerr << "No BoostConfigs element found." << std::endl;
+        return -1;
+    }
+
+    element = element->FirstChildElement(BOOSTS_CONFIGS_XML_CHILD_CONFIG);
+    if (!element) {
+        std::cerr << "No PerfBoost element found." << std::endl;
+        return -1;
+    }
+
+    parsePerfBoostsConfig(element, &perfBoosts);
 
     ///////////////////////////////
     // commonresourceconfigs.xml //
     ///////////////////////////////
-    if (doc.LoadFile(argv[2]) != XML_SUCCESS) {
-        std::cerr << "Error loading file!" << std::endl;
+    doc.LoadFile(argv[2]);
+    if (doc.Error()) {
+        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
         return -1;
     }
 
-    std::unordered_map<std::pair<int, int>, ResourceConfig, pair_hash> resourceMap;
-
-    root = doc.FirstChildElement("ResourceConfigs");
-    if (!root) {
-        std::cerr << "No root element found." << std::endl;
+    element = doc.FirstChildElement("ResourceConfigs");
+    if (!element) {
+        std::cerr << "No ResourceConfigs element found." << std::endl;
         return -1;
     }
 
-    XMLElement* perfResources = root->FirstChildElement("PerfResources");
-
-    if (!perfResources) {
+    element = element->FirstChildElement("PerfResources");
+    if (!element) {
         std::cerr << "No PerfResources element found." << std::endl;
         return -1;
     }
 
-    XMLElement* currentElement = perfResources->FirstChildElement("Major");
+    element = element->FirstChildElement("Major");
     int currentMajor = -1;
-    while (currentElement) {
-        if (strcmp(currentElement->Name(), "Major") == 0) {
-            const char* opcodeValueStr = currentElement->Attribute("OpcodeValue");
+    while (element) {
+        if (strcmp(element->Name(), "Major") == 0) {
+            const char* opcodeValueStr = element->Attribute("OpcodeValue");
             if (opcodeValueStr) {
                 currentMajor = static_cast<int>(std::stoul(opcodeValueStr, nullptr, 16));
             }
-        } else if (strcmp(currentElement->Name(), "Minor") == 0) {
-            const char* opcodeValueStr = currentElement->Attribute("OpcodeValue");
+        } else if (strcmp(element->Name(), "Minor") == 0) {
+            const char* opcodeValueStr = element->Attribute("OpcodeValue");
             if (opcodeValueStr) {
                 int minorOpcode = static_cast<int>(std::stoul(opcodeValueStr, nullptr, 16));
 
-                const char* node = currentElement->Attribute("Node");
-                const char* supported = currentElement->Attribute("Supported");
+                const char* node = element->Attribute("Node");
+                const char* supported = element->Attribute("Supported");
                 if (node) {
                     auto key = std::make_pair(currentMajor, minorOpcode);
                     resourceMap[key] = {currentMajor, minorOpcode,
@@ -244,39 +269,39 @@ int main(int argc, char* argv[]) {
                 }
             }
         } else {
-            std::cout << "ERROR, unknown element: " << currentElement->Name() << std::endl;
+            std::cout << "ERROR, unknown element: " << element->Name() << std::endl;
             return 0;
         }
-        currentElement = currentElement->NextSiblingElement();
+        element = element->NextSiblingElement();
     }
 
     ///////////////////////////////
     // targetresourceconfigs.xml //
     ///////////////////////////////
-    if (doc.LoadFile(argv[3]) != XML_SUCCESS) {
-        std::cerr << "Error loading file!" << std::endl;
+    doc.LoadFile(argv[3]);
+    if (doc.Error()) {
+        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
         return -1;
     }
 
-    root = doc.FirstChildElement("ResourceConfigs");
-    if (!root) {
-        std::cerr << "No root element found." << std::endl;
+    element = doc.FirstChildElement("ResourceConfigs");
+    if (!element) {
+        std::cerr << "No ResourceConfigs element found." << std::endl;
         return -1;
     }
 
-    XMLElement* targetPerfResources = root->FirstChildElement("PerfResources");
-
-    if (!targetPerfResources) {
+    element = element->FirstChildElement("PerfResources");
+    if (!element) {
         std::cerr << "No PerfResources element found." << std::endl;
         return -1;
     }
 
-    currentElement = targetPerfResources->FirstChildElement("Config");
-    while (currentElement) {
-        const char* majorOpcodeStr = currentElement->Attribute("MajorValue");
-        const char* minorOpcodeStr = currentElement->Attribute("MinorValue");
-        const char* node = currentElement->Attribute("Node");
-        const char* supportedStr = currentElement->Attribute("Supported");
+    element = element->FirstChildElement("Config");
+    while (element) {
+        const char* majorOpcodeStr = element->Attribute("MajorValue");
+        const char* minorOpcodeStr = element->Attribute("MinorValue");
+        const char* node = element->Attribute("Node");
+        const char* supportedStr = element->Attribute("Supported");
 
         int majorOpcode = static_cast<int>(std::stoul(majorOpcodeStr, nullptr, 16));
         int minorOpcode = static_cast<int>(std::stoul(minorOpcodeStr, nullptr, 16));
@@ -285,21 +310,24 @@ int main(int argc, char* argv[]) {
         resourceMap[key] = {majorOpcode, minorOpcode,
                             (supportedStr != nullptr ? strcmp(supportedStr, "no") != 0 : true),
                             node != nullptr ? node : "NO PATH"};
-        currentElement = currentElement->NextSiblingElement("Config");
+        element = element->NextSiblingElement("Config");
     }
 
-    for (Config config : perfBoostStruct.configs) {
-        auto it = hintMap.find(config.id);
-        std::cout << "Config ID: " << std::format("0x{:x}", config.id) << "("
+    ////////////////////////////////
+    // Print parsed config /////////
+    ////////////////////////////////
+    for (PerfBoost boost : perfBoosts) {
+        auto it = hintMap.find(boost.id);
+        std::cout << "Config ID: " << std::format("0x{:x}", boost.id) << "("
                   << ((it != hintMap.end()) ? it->second : "UNKNOWN HINT") << ")" << std::endl
-                  << "Type: " << config.type << std::endl
-                  << "Enable: " << (config.enable ? "true" : "false") << std::endl
-                  << "Timeout: " << config.timeout << std::endl
-                  << "Target: " << config.target << std::endl
-                  << "Kernel: " << config.kernel << std::endl
-                  << "FPS: " << config.fps << std::endl;
+                  << "Type: " << boost.type << std::endl
+                  << "Enable: " << (boost.enable ? "true" : "false") << std::endl
+                  << "Timeout: " << boost.timeout << std::endl
+                  << "Target: " << boost.target << std::endl
+                  << "Kernel: " << boost.kernel << std::endl
+                  << "FPS: " << boost.fps << std::endl;
 
-        for (const auto& res : config.resources) {
+        for (const auto& res : boost.resources) {
             auto key = std::make_pair(res.getMajor(), res.getMinor());
             std::cout << std::format("(0x{:x}, 0x{:x})", resourceMap[key].major,
                                      resourceMap[key].minor)
@@ -312,34 +340,37 @@ int main(int argc, char* argv[]) {
         std::cout << std::endl;
     }
 
+    ///////////////////////////////
+    // powerhint.json generation //
+    ///////////////////////////////
     json nodesJson = json::array();
     json actionsJson = json::array();
 
     std::map<std::string, NodeInfo> nodeTable;  // name -> NodeInfo
 
-    for (const Config& config : perfBoostStruct.configs) {
-        if (!config.enable) {
+    for (const PerfBoost& boost : perfBoosts) {
+        if (!boost.enable) {
             continue;
         }
 
-        std::string powerHint = getPowerHintName(config);
+        std::string powerHint = getPowerHintName(boost);
         if (powerHint.empty()) {
-            // Unknown (id, type, fps) -> skip this config
+            // Unknown (id, type, fps) -> skip this boost
             continue;
         }
 
-        const int duration = config.timeout;  // Duration = timeout
+        const int duration = boost.timeout;
 
-        for (const auto& res : config.resources) {
+        for (const auto& res : boost.resources) {
             auto key = std::make_pair(res.getMajor(), res.getMinor());
             auto rcIt = resourceMap.find(key);
             if (rcIt == resourceMap.end()) {
-                continue;  // unknown resource, skip
+                continue;
             }
 
             const ResourceConfig& rc = rcIt->second;
             if (!rc.supported) {
-                continue;  // skip unsupported
+                continue;
             }
 
             std::string nodeName = makeNodeName(res, rc);
@@ -351,19 +382,12 @@ int main(int argc, char* argv[]) {
             if (n.name.empty()) {
                 n.name = nodeName;
                 n.path = nodePath;
-                n.defaultIndex = 0;    // or customize
-                n.resetOnInit = true;  // or customize
-            } else {
-                // Sanity check: same name should not change path
-                if (n.path != nodePath) {
-                    std::cerr << "Warning: node " << nodeName
-                              << " has conflicting paths: " << n.path << " vs " << nodePath
-                              << std::endl;
-                }
+                n.defaultIndex = 0;
+                // TODO not sure about this?
+                n.resetOnInit = true;
             }
             n.values.insert(valueStr);
 
-            // Create Action entry
             json action;
             action["PowerHint"] = powerHint;
             action["Node"] = nodeName;

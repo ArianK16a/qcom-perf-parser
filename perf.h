@@ -144,7 +144,7 @@ class Resource {
     int getCore() const;
 };
 
-struct Config {
+struct PerfBoost {
     std::vector<Resource> resources;
     bool enable;
     int id;
@@ -154,10 +154,6 @@ struct Config {
     std::string target;
     // TODO eigentlich array
     int fps;
-};
-
-struct PerfBoost {
-    std::vector<Config> configs;
 };
 
 struct ResourceConfig {
@@ -187,12 +183,6 @@ struct HintKeyHash {
     }
 };
 
-static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
-        {{0x00001080, 1, 120}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
-        {{0x00001081, 10, -1}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
-        // { { another_id, another_type, another_fps }, "LAUNCH" },
-};
-
 struct NodeInfo {
     std::string name;
     std::string path;
@@ -200,16 +190,3 @@ struct NodeInfo {
     int defaultIndex = 0;
     bool resetOnInit = true;
 };
-
-int clusterToCpuIndex(int cluster) {
-    switch (cluster) {
-        case 0:
-            return 4;  // big
-        case 1:
-            return 0;  // little
-        case 2:
-            return 7;  // prime
-        default:
-            return 99;
-    }
-}
