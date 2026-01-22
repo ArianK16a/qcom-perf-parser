@@ -195,8 +195,8 @@ int main(int argc, char* argv[]) {
     std::vector<PerfBoost> perfBoosts;
     std::unordered_map<std::pair<int, int>, ResourceConfig, pair_hash> resourceMap;
 
-    if (argc != 4) {
-        std::cout << "usage: ./perf perfboostsconfig.xml commonresourceconfigs.xml "
+    if (argc != 5) {
+        std::cout << "usage: ./perf perfboostsconfig.xml powerhint.xml commonresourceconfigs.xml "
                      "targetresourceconfigs.xml"
                   << std::endl;
         return 0;
@@ -225,10 +225,33 @@ int main(int argc, char* argv[]) {
 
     parsePerfBoostsConfig(element, &perfBoosts);
 
+    ///////////////////
+    // powerhint.xml //
+    ///////////////////
+    doc.LoadFile(argv[2]);
+    if (doc.Error()) {
+        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
+        return -1;
+    }
+
+    element = doc.FirstChildElement("HintConfigs");
+    if (!element) {
+        std::cerr << "No HintConfigs element found." << std::endl;
+        return -1;
+    }
+
+    element = element->FirstChildElement("Powerhint");
+    if (!element) {
+        std::cerr << "No Powerhint element found." << std::endl;
+        return -1;
+    }
+
+    parsePerfBoostsConfig(element, &perfBoosts);
+
     ///////////////////////////////
     // commonresourceconfigs.xml //
     ///////////////////////////////
-    doc.LoadFile(argv[2]);
+    doc.LoadFile(argv[3]);
     if (doc.Error()) {
         std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
         return -1;
@@ -278,7 +301,7 @@ int main(int argc, char* argv[]) {
     ///////////////////////////////
     // targetresourceconfigs.xml //
     ///////////////////////////////
-    doc.LoadFile(argv[3]);
+    doc.LoadFile(argv[4]);
     if (doc.Error()) {
         std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
         return -1;
