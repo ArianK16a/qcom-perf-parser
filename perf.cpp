@@ -189,15 +189,27 @@ int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoost
     return 0;
 }
 
+std::vector<int> toIntVector(const std::string& s) {
+    std::vector<int> result;
+    std::stringstream ss(s);
+    std::string item;
+
+    while (std::getline(ss, item, ',')) {
+        result.push_back(std::stoi(item));
+    }
+
+    return result;
+}
+
 int main(int argc, char* argv[]) {
     XMLDocument doc;
     XMLElement* element;
     std::vector<PerfBoost> perfBoosts;
     std::unordered_map<std::pair<int, int>, ResourceConfig, pair_hash> resourceMap;
-
-    if (argc != 5) {
+    std::vector<TargetInfo> targets;
+    if (argc != 6) {
         std::cout << "usage: ./perf perfboostsconfig.xml powerhint.xml commonresourceconfigs.xml "
-                     "targetresourceconfigs.xml"
+                     "targetresourceconfigs.xml targetconfig.xml"
                   << std::endl;
         return 0;
     }
@@ -334,6 +346,49 @@ int main(int argc, char* argv[]) {
                             (supportedStr != nullptr ? strcmp(supportedStr, "no") != 0 : true),
                             node != nullptr ? node : "NO PATH"};
         element = element->NextSiblingElement("Config");
+    }
+
+    //////////////////////
+    // targetconfig.xml //
+    //////////////////////
+    doc.LoadFile(argv[5]);
+    if (doc.Error()) {
+        std::cerr << "Error loading file: " << doc.ErrorIDToName(doc.ErrorID()) << std::endl;
+        return -1;
+    }
+
+    element = doc.FirstChildElement("TargetConfig");
+    if (!element) {
+        std::cerr << "No TargetConfig element found." << std::endl;
+        return -1;
+    }
+
+    element = element->FirstChildElement();
+    if (!element) {
+        std::cerr << "No Config[0-09] element found." << std::endl;
+        return -1;
+    }
+    while (element) {
+        XMLElement* infoElement = element->FirstChildElement();
+        TargetInfo target;
+        while (infoElement) {
+            if (strcmp(infoElement->Name(), "TargetInfo") == 0) {
+                target.target = infoElement->Attribute("Target");
+                target.numClusters = atoi(infoElement->Attribute("NumClusters"));
+                target.socIds = toIntVector(infoElement->Attribute("SocIds"));
+                target.synCore = atoi(infoElement->Attribute("SynCore"));
+                target.coreCtlCpu = atoi(infoElement->Attribute("CoreCtlCpu"));
+                target.minCoreOnline = atoi(infoElement->Attribute("MinCoreOnline"));
+                target.cpufreqGov = atoi(infoElement->Attribute("CpufreqGov"));
+            } else if (strcmp(infoElement->Name(), "ClustersInfo") == 0) {
+                target.clusters.push_back(ClustersInfo(infoElement->Attribute("Id"),
+                                                       infoElement->Attribute("NumCores"),
+                                                       infoElement->Attribute("Type")));
+            }
+            infoElement = infoElement->NextSiblingElement();
+        }
+        targets.push_back(target);
+        element = element->NextSiblingElement();
     }
 
     ////////////////////////////////

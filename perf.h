@@ -1,3 +1,4 @@
+#include <cstring>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -204,4 +205,33 @@ struct NodeInfo {
     std::set<std::string> values;
     int defaultIndex = 0;
     bool resetOnInit = true;
+};
+
+enum ClusterType { LITTLE, BIG, PRIME };
+
+struct ClustersInfo {
+    ClustersInfo(const char* id, const char* numCores, const char* type)
+        : id(atoi(id)), numCores(atoi(numCores)) {
+        if (strcmp(type, "little") == 0) {
+            this->type = LITTLE;
+        } else if (strcmp(type, "big") == 0) {
+            this->type = BIG;
+        } else if (strcmp(type, "prime") == 0) {
+            this->type = PRIME;
+        }
+    }
+    int id;
+    int numCores;
+    ClusterType type;
+};
+
+struct TargetInfo {
+    std::string target;
+    int numClusters;
+    std::vector<int> socIds;
+    int synCore;
+    int coreCtlCpu;
+    int minCoreOnline;
+    int cpufreqGov;
+    std::vector<ClustersInfo> clusters;
 };
