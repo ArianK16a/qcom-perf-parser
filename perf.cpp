@@ -3,6 +3,8 @@
 #include <format>
 #include <iostream>
 // #include <nlohmann/json.hpp>
+#include <sstream>
+#include <string>
 #include "json.hpp"
 #include "tinyxml2.h"
 
@@ -60,18 +62,20 @@ static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerH
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
-int clusterToCpuIndex(int cluster) {
-    switch (cluster) {
-        case 0:
-            return 4;  // big
-        case 1:
-            return 0;  // little
-        case 2:
-            return 7;  // prime
-        default:
-            return 99;
+int clusterToCpuIndex(const TargetInfo& target, int clusterId)
+{
+    int cpuIndex = 0;
+
+    for (const auto& c : target.clusters) {
+        if (c.id == clusterId) {
+            return cpuIndex;
+        }
+        cpuIndex += c.numCores;
     }
+
+    return -1;
 }
+
 
 std::string getPowerHintName(const PerfBoost& boost) {
     HintKey key{boost.id, boost.type, boost.fps, boost.target};
@@ -82,7 +86,7 @@ std::string getPowerHintName(const PerfBoost& boost) {
     return it->second;
 }
 
-std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
+std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
     const int cluster = res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
@@ -118,28 +122,48 @@ std::string makeNodeName(const Resource& res, const ResourceConfig& rc) {
     return name;
 }
 
-std::string makeNodePath(const Resource& res, const ResourceConfig& rc) {
+std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
     const int cluster = res.cluster;
 
     if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
         return "/sys/devices/system/cpu/cpufreq/policy" +
-               std::to_string(clusterToCpuIndex(cluster)) + "/walt/adaptive_high_freq";
+               std::to_string(clusterToCpuIndex(target, cluster)) + "/walt/adaptive_high_freq";
     }
     if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
         return "/sys/devices/system/cpu/cpufreq/policy" +
-               std::to_string(clusterToCpuIndex(cluster)) + "/walt/adaptive_low_freq";
+               std::to_string(clusterToCpuIndex(target, cluster)) + "/walt/adaptive_low_freq";
     }
 
     return rc.node;
 }
 
-std::string makeValueString(const Resource& res, const ResourceConfig& rc) {
+std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int value) {
+    int startCpu = clusterToCpuIndex(target, clusterId);
+
+    auto it = std::find_if(target.clusters.begin(), target.clusters.end(),
+                           [&](const ClustersInfo& c) { return c.id == clusterId; });
+
+    if (it == target.clusters.end()) {
+        return "ERROR";
+    }
+
+    std::ostringstream oss;
+    for (int i = 0; i < it->numCores; ++i) {
+        if (i > 0) oss << ' ';
+        oss << (startCpu + i) << ':' << value;
+    }
+
+    return oss.str();
+}
+
+std::string makeValueString(const Resource& res, const ResourceConfig& rc,
+                            const TargetInfo& target) {
     int v = res.value;
-    const int cluster = res.cluster;
+    const ClusterType cluster = (ClusterType)res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
         rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
-        return std::to_string(clusterToCpuIndex(cluster)) + ":" + std::to_string(v);
+        return makeMsmPerfValueString(target, cluster, v);
     }
 
     return std::to_string(v);
@@ -436,6 +460,13 @@ int main(int argc, char* argv[]) {
             // Unknown (id, type, fps) -> skip this boost
             continue;
         }
+        auto it = std::find_if(targets.begin(), targets.end(),
+                               [&](const TargetInfo& t) { return t.target == boost.target; });
+        if (it == targets.end()) {
+            std::cout << "missing targetinfo for " << boost.target << std::endl;
+            return -1;
+        }
+        TargetInfo& target = *it;
 
         const int duration = boost.timeout;
 
@@ -451,9 +482,9 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            std::string nodeName = makeNodeName(res, rc);
-            std::string nodePath = makeNodePath(res, rc);
-            std::string valueStr = makeValueString(res, rc);
+            std::string nodeName = makeNodeName(res, rc, target);
+            std::string nodePath = makeNodePath(res, rc, target);
+            std::string valueStr = makeValueString(res, rc, target);
 
             // Update / create NodeInfo
             NodeInfo& n = nodeTable[nodeName];
