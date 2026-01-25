@@ -76,7 +76,6 @@ int clusterToCpuIndex(const TargetInfo& target, int clusterId)
     return -1;
 }
 
-
 std::string getPowerHintName(const PerfBoost& boost) {
     HintKey key{boost.id, boost.type, boost.fps, boost.target};
     auto it = kHintToPowerHint.find(key);
@@ -137,6 +136,7 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
     return rc.node;
 }
 
+#define FREQ_MULTIPLICATION_FACTOR 1000ul
 std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int value) {
     int startCpu = clusterToCpuIndex(target, clusterId);
 
@@ -150,7 +150,7 @@ std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int 
     std::ostringstream oss;
     for (int i = 0; i < it->numCores; ++i) {
         if (i > 0) oss << ' ';
-        oss << (startCpu + i) << ':' << value;
+        oss << (startCpu + i) << ':' << (value * FREQ_MULTIPLICATION_FACTOR);
     }
 
     return oss.str();
