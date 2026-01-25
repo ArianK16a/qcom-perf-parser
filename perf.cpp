@@ -2,11 +2,11 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
-// #include <nlohmann/json.hpp>
 #include <sstream>
 #include <string>
 #include "json.hpp"
 #include "tinyxml2.h"
+#include "cpu_freq_utils.h"
 
 using nlohmann::json;
 using namespace tinyxml2;
@@ -147,10 +147,11 @@ std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int 
         return "ERROR";
     }
 
+    int requestedFrequency = find_closest_freq_for_cpu(startCpu, (value * FREQ_MULTIPLICATION_FACTOR));
     std::ostringstream oss;
     for (int i = 0; i < it->numCores; ++i) {
         if (i > 0) oss << ' ';
-        oss << (startCpu + i) << ':' << (value * FREQ_MULTIPLICATION_FACTOR);
+        oss << (startCpu + i) << ':' << requestedFrequency;
     }
 
     return oss.str();
