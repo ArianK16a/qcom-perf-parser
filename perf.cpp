@@ -3,18 +3,18 @@
 #include <cstdlib>
 #include <format>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <unordered_set>
-#include "cpu_freq_utils.h"
 #include "json.hpp"
 #include "tinyxml2.h"
 
 using json = nlohmann::ordered_json;
 using namespace tinyxml2;
 
-std::string readNodeDefaultValueViaAdb(const std::string& path) {
+std::string readNodeValueViaAdb(const std::string& path) {
     std::string cmd = "adb shell \"cat " + path + "\"";
 
     std::array<char, 256> buffer;
@@ -32,6 +32,67 @@ std::string readNodeDefaultValueViaAdb(const std::string& path) {
         result.pop_back();
     }
     return result;
+}
+
+std::vector<int> parseFrequencies(const std::string& s) {
+    std::vector<int> freqs;
+    std::istringstream iss(s);
+    int f;
+    while (iss >> f) {
+        freqs.push_back(f);
+    }
+    return freqs;
+}
+
+std::vector<std::vector<int>> readScalingAvailableFrequenciesViaAdb(int numCpus) {
+    std::vector<std::vector<int>> result;
+    result.reserve(numCpus);
+
+    for (int cpu = 0; cpu < numCpus; ++cpu) {
+        std::string path = "/sys/devices/system/cpu/cpu" + std::to_string(cpu) +
+                           "/cpufreq/scaling_available_frequencies";
+
+        std::string raw = readNodeValueViaAdb(path);  // e.g. "441600 595200 787200 ..."
+        if (raw.empty()) {
+            std::cerr << "Failed to read " << path << "\n";
+            result.push_back({});
+            continue;
+        }
+
+        auto freqs = parseFrequencies(raw);
+        result.push_back(std::move(freqs));
+    }
+
+    return result;
+}
+
+std::vector<std::vector<int>> scaling_available_frequencies =
+        readScalingAvailableFrequenciesViaAdb(8);
+
+// Find closest available frequency (in kHz) for a specific CPU id.
+// cpu_id corresponds directly to /sys/devices/system/cpu/cpu<cpu_id>.
+// Returns -1 on error.
+inline int find_closest_freq_for_cpu(int cpu_id, int target_khz) {
+    if (cpu_id < 0 || static_cast<std::size_t>(cpu_id) >= scaling_available_frequencies.size()) {
+        return -1;
+    }
+
+    const auto& freqs = scaling_available_frequencies[static_cast<std::size_t>(cpu_id)];
+    if (freqs.empty()) {
+        return -1;
+    }
+
+    int best = freqs[0];
+    int best_diff = std::abs(freqs[0] - target_khz);
+
+    for (std::size_t i = 1; i < freqs.size(); ++i) {
+        int diff = std::abs(freqs[i] - target_khz);
+        if (diff < best_diff) {
+            best_diff = diff;
+            best = freqs[i];
+        }
+    }
+    return best;
 }
 
 std::string trim(const std::string& str) {
@@ -287,7 +348,7 @@ std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc
                 {7, find_closest_freq_for_cpu(7, INT_MAX)},
         });
     }
-    return readNodeDefaultValueViaAdb(makeNodePath(res, rc, target));
+    return readNodeValueViaAdb(makeNodePath(res, rc, target));
 }
 
 int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoosts) {
