@@ -143,7 +143,9 @@ struct pair_hash {
 static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
         {{0x00001080, 1, 120, "volcano"}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
         {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
-        {{0x00001337, -1, -1, "volcano"}, "CAMERA"},
+        {{0x00001333, -1, -1, "volcano"}, "CAMERA_LAUNCH"},
+        // {{0x00001339, -1, -1, "volcano"}, "CAMERA_SHOT"},
+        {{0x00001206, -1, -1, "volcano"}, "SUSTAINED_PERFORMANCE"},
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
@@ -194,6 +196,7 @@ const std::unordered_map<std::string, std::string> kFixedNodeNames = {
         {"/sys/kernel/msm_performance/parameters/cpu_min_freq", "MSMPerfMinFreq"},
         {"/sys/kernel/msm_performance/parameters/cpu_max_freq", "MSMPerfMaxFreq"},
         {"/dev/cpu_dma_latency", "PMQoSCpuDmaLatency"},
+        {"SPECIAL_NODE - lock_min_cores", "CoreCtlMinCores"},
 };
 
 // Cluster-dependent names
@@ -242,6 +245,10 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
     if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
         return "/sys/devices/system/cpu/cpufreq/policy" +
                std::to_string(clusterToCpuIndex(target, cluster)) + "/walt/adaptive_low_freq";
+    }
+    if (rc.node == "SPECIAL_NODE - lock_min_cores") {
+        return "/sys/devices/system/cpu/cpu" + std::to_string(clusterToCpuIndex(target, cluster)) +
+               "/core_ctl/min_cpus";
     }
 
     return rc.node;
@@ -308,6 +315,30 @@ std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int 
     return buildMsmPerfValueString(valueMap);
 }
 
+int getNextGpuFreq(int requestedHz) {
+    const std::string path = "/sys/class/kgsl/kgsl-3d0/devfreq/available_frequencies";
+
+    std::string raw = readNodeValueViaAdb(path);
+    if (raw.empty()) {
+        std::cerr << "Failed to read " << path << "\n";
+        return -1;  // or some error code
+    }
+
+    auto freqs = parseFrequencies(raw);
+    if (freqs.empty()) {
+        std::cerr << "No frequencies parsed from " << path << "\n";
+        return -1;
+    }
+
+    std::sort(freqs.begin(), freqs.end());
+    auto it = std::lower_bound(freqs.begin(), freqs.end(), requestedHz);
+    if (it == freqs.end()) {
+        // No freq >= requested; clamp to highest available
+        return freqs.back();
+    }
+    return *it;
+}
+
 std::string makeValueString(const Resource& res, const ResourceConfig& rc, const TargetInfo& target,
                             std::string previousValue) {
     int v = res.value;
@@ -316,6 +347,11 @@ std::string makeValueString(const Resource& res, const ResourceConfig& rc, const
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
         rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
         return makeMsmPerfValueString(target, cluster, v, previousValue);
+    }
+
+    if (rc.node == "/sys/class/kgsl/kgsl-3d0/devfreq/min_freq" ||
+        rc.node == "/sys/class/kgsl/kgsl-3d0/devfreq/max_freq") {
+        return std::to_string(getNextGpuFreq(v * 1000000));
     }
 
     return std::to_string(v);
@@ -600,29 +636,29 @@ int main(int argc, char* argv[]) {
     ////////////////////////////////
     // Print parsed config /////////
     ////////////////////////////////
-    for (PerfBoost boost : perfBoosts) {
-        auto it = hintMap.find(boost.id);
-        std::cout << "Config ID: " << std::format("0x{:x}", boost.id) << "("
-                  << ((it != hintMap.end()) ? it->second : "UNKNOWN HINT") << ")" << std::endl
-                  << "Type: " << boost.type << std::endl
-                  << "Enable: " << (boost.enable ? "true" : "false") << std::endl
-                  << "Timeout: " << boost.timeout << std::endl
-                  << "Target: " << boost.target << std::endl
-                  << "Kernel: " << boost.kernel << std::endl
-                  << "FPS: " << boost.fps << std::endl;
+    // for (PerfBoost boost : perfBoosts) {
+    //     auto it = hintMap.find(boost.id);
+    //     std::cout << "Config ID: " << std::format("0x{:x}", boost.id) << "("
+    //               << ((it != hintMap.end()) ? it->second : "UNKNOWN HINT") << ")" << std::endl
+    //               << "Type: " << boost.type << std::endl
+    //               << "Enable: " << (boost.enable ? "true" : "false") << std::endl
+    //               << "Timeout: " << boost.timeout << std::endl
+    //               << "Target: " << boost.target << std::endl
+    //               << "Kernel: " << boost.kernel << std::endl
+    //               << "FPS: " << boost.fps << std::endl;
 
-        for (const auto& res : boost.resources) {
-            auto key = std::make_pair(res.major, res.minor);
-            std::cout << std::format("(0x{:x}, 0x{:x})", resourceMap[key].major,
-                                     resourceMap[key].minor)
-                      << " -> value: " << res.value << " on \"" << resourceMap[key].node << "\""
-                      << ", cluster: "
-                      << res.cluster
-                      //   << " on core: " << res.getCore()
-                      << (resourceMap[key].supported ? "" : " UNSUPPORTED") << std::endl;
-        }
-        std::cout << std::endl;
-    }
+    //     for (const auto& res : boost.resources) {
+    //         auto key = std::make_pair(res.major, res.minor);
+    //         std::cout << std::format("(0x{:x}, 0x{:x})", resourceMap[key].major,
+    //                                  resourceMap[key].minor)
+    //                   << " -> value: " << res.value << " on \"" << resourceMap[key].node << "\""
+    //                   << ", cluster: "
+    //                   << res.cluster
+    //                   //   << " on core: " << res.getCore()
+    //                   << (resourceMap[key].supported ? "" : " UNSUPPORTED") << std::endl;
+    //     }
+    //     std::cout << std::endl;
+    // }
 
     ///////////////////////////////
     // powerhint.json generation //
@@ -668,16 +704,11 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            // TODO support some of these
-            if (rc.node.rfind("SPECIAL_NODE", 0) == 0) {
-                continue;
-            }
-
             std::string nodeName = makeNodeName(res, rc, target);
 
             // libperfmgr doesn't support multiple values for one node within one action
             auto it = std::find_if(actionsJson.begin(), actionsJson.end(), [&](const json& elem) {
-                return elem.value("Node", std::string{}) == nodeName;
+                return elem.value("PowerHint", std::string{}) == powerHint && elem.value("Node", std::string{}) == nodeName;
             });
 
             if (it != actionsJson.end()) {
@@ -696,8 +727,7 @@ int main(int argc, char* argv[]) {
             // this loop when multiple resources adjust the same node
             NodeInfo& n = nodeTable[nodeName];
             if (n.name.empty()) {
-                bool hasDefault = rc.node.rfind("SPECIAL_NODE", 0) != 0 &&
-                                  kNoDefaultNodes.find(rc.node) == kNoDefaultNodes.end();
+                bool hasDefault = kNoDefaultNodes.find(rc.node) == kNoDefaultNodes.end();
 
                 n.name = nodeName;
                 n.path = makeNodePath(res, rc, target);
