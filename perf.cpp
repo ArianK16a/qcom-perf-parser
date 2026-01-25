@@ -6,6 +6,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include "cpu_freq_utils.h"
 #include "json.hpp"
 #include "tinyxml2.h"
@@ -107,36 +108,54 @@ std::string getPowerHintName(const PerfBoost& boost) {
     return it->second;
 }
 
+const std::unordered_set<std::string> kNoDefaultNodes = {
+        "/dev/cpu_dma_latency",
+        "/sys/kernel/msm_performance/parameters/cpu_min_freq",
+        "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+};
+
+const std::unordered_set<std::string> kHoldFdNodes = {
+        "/dev/cpu_dma_latency",
+};
+
+const std::unordered_set<std::string> kWriteOnlyNodes = {
+        "/sys/kernel/msm_performance/parameters/cpu_min_freq",
+        "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+};
+
+// Fixed names (not depending on cluster)
+const std::unordered_map<std::string, std::string> kFixedNodeNames = {
+        {"/sys/kernel/msm_performance/parameters/cpu_min_freq", "MSMPerfMinFreq"},
+        {"/sys/kernel/msm_performance/parameters/cpu_max_freq", "MSMPerfMaxFreq"},
+        {"/dev/cpu_dma_latency", "PMQoSCpuDmaLatency"},
+};
+
+// Cluster-dependent names
+const std::unordered_map<std::string, std::array<const char*, 3>> kClusterNodeNames = {
+        {"/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq",
+         {"WaltAdaptiveHighFreqBig", "WaltAdaptiveHighFreqLittle", "WaltAdaptiveHighFreqPrime"}},
+        {"/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq",
+         {"WaltAdaptiveLowFreqBig", "WaltAdaptiveLowFreqLittle", "WaltAdaptiveLowFreqPrime"}},
+};
+
 std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
+    const auto& node = rc.node;
     const int cluster = res.cluster;
 
-    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
-        if (cluster == 0) return "MSMPerfMinFreqBig";
-        if (cluster == 1) return "MSMPerfMinFreqLittle";
-        if (cluster == 2) return "MSMPerfMinFreqPrime";
-    }
-    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
-        if (cluster == 0) return "MSMPerfMaxFreqBig";
-        if (cluster == 1) return "MSMPerfMaxFreqLittle";
-        if (cluster == 2) return "MSMPerfMaxFreqPrime";
+    // Fixed-name nodes
+    if (auto it = kFixedNodeNames.find(node); it != kFixedNodeNames.end()) {
+        return it->second;
     }
 
-    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
-        if (cluster == 0) return "WaltAdaptiveHighFreqBig";
-        if (cluster == 1) return "WaltAdaptiveHighFreqLittle";
-        if (cluster == 2) return "WaltAdaptiveHighFreqPrime";
-    }
-    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
-        if (cluster == 0) return "WaltAdaptiveLowFreqBig";
-        if (cluster == 1) return "WaltAdaptiveLowFreqLittle";
-        if (cluster == 2) return "WaltAdaptiveLowFreqPrime";
+    // Cluster-dependent nodes
+    if (auto it = kClusterNodeNames.find(node); it != kClusterNodeNames.end()) {
+        const auto& names = it->second;
+        if (cluster >= 0 && cluster < static_cast<int>(names.size()) && names[cluster] != nullptr) {
+            return names[cluster];
+        }
     }
 
-    if (rc.node == "/dev/cpu_dma_latency") {
-        return "PMQoSCpuDmaLatency";
-    }
-
-    // Fallback: derive name from path (replace / with _ etc.)
+    // Fallback: derive name from path (replace / and - with _)
     std::string name = rc.node;
     for (auto& ch : name) {
         if (ch == '/')
@@ -162,9 +181,46 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
     return rc.node;
 }
 
+std::map<int, int> parseMsmPerfValueString(const std::string& s) {
+    std::map<int, int> result;
+    std::istringstream iss(s);
+    std::string token;
+
+    while (iss >> token) {
+        auto pos = token.find(':');
+        if (pos == std::string::npos) {
+            continue;  // or log error
+        }
+
+        int cpu = std::stoi(token.substr(0, pos));
+        std::string val = token.substr(pos + 1);
+        result[cpu] = std::stoi(val);
+    }
+
+    return result;
+}
+
+std::string buildMsmPerfValueString(const std::map<int, int>& values) {
+    std::string result;
+    bool first = true;
+
+    for (const auto& [cpu, val] : values) {
+        if (!first) {
+            result += ' ';
+        }
+        first = false;
+
+        result += std::to_string(cpu);
+        result += ':';
+        result += std::to_string(val);
+    }
+
+    return result;
+}
+
 #define FREQ_MULTIPLICATION_FACTOR 1000ul
 std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int value,
-                                   bool forceValue = false) {
+                                   std::string previousValue, bool forceValue = false) {
     int startCpu = clusterToCpuIndex(target, clusterId);
 
     auto it = std::find_if(target.clusters.begin(), target.clusters.end(),
@@ -174,55 +230,47 @@ std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int 
         return "ERROR";
     }
 
+    std::map<int, int> valueMap = parseMsmPerfValueString(previousValue);
     int requestedFrequency =
             forceValue ? value
                        : find_closest_freq_for_cpu(startCpu, (value * FREQ_MULTIPLICATION_FACTOR));
-    std::ostringstream oss;
     for (int i = 0; i < it->numCores; ++i) {
-        if (i > 0) oss << ' ';
-        oss << (startCpu + i) << ':' << requestedFrequency;
+        // oss << (startCpu + i) << ':' << requestedFrequency;
+        valueMap.insert({startCpu + i, requestedFrequency});
     }
 
-    std::cout << "returning " << oss.str() << "for cluster: " << clusterId
-              << " with value: " << value << std::endl;
-    return oss.str();
+    return buildMsmPerfValueString(valueMap);
 }
 
-std::string makeValueString(const Resource& res, const ResourceConfig& rc,
-                            const TargetInfo& target) {
+std::string makeValueString(const Resource& res, const ResourceConfig& rc, const TargetInfo& target,
+                            std::string previousValue) {
     int v = res.value;
     const ClusterType cluster = (ClusterType)res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
         rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
-        return makeMsmPerfValueString(target, cluster, v);
+        return makeMsmPerfValueString(target, cluster, v, previousValue);
     }
 
     return std::to_string(v);
 }
 
-bool hasDefaultValue(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
-    if (rc.node == "/dev/cpu_dma_latency") {
-        return false;
-    }
-    if (rc.node.rfind("SPECIAL_NODE", 0) == 0) {
-        return false;
-    }
-    return true;
-}
-
-bool needsHoldFd(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
-    if (rc.node == "/dev/cpu_dma_latency") {
-        return true;
-    }
-    return false;
-}
 std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc,
                                    const TargetInfo& target) {
     const ClusterType cluster = (ClusterType)res.cluster;
 
-    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" || rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
-        return makeMsmPerfValueString(target, cluster, 0, true);
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
+        rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+        return buildMsmPerfValueString(std::map<int, int>{
+                {0, 0},
+                {1, 0},
+                {2, 0},
+                {3, 0},
+                {4, 0},
+                {5, 0},
+                {6, 0},
+                {7, 0},
+        });
     }
     return readNodeDefaultValueViaAdb(makeNodePath(res, rc, target));
 }
@@ -541,32 +589,43 @@ int main(int argc, char* argv[]) {
             }
 
             std::string nodeName = makeNodeName(res, rc, target);
-            std::string nodePath = makeNodePath(res, rc, target);
-            std::string valueStr = makeValueString(res, rc, target);
-            bool hasDefault = hasDefaultValue(res, rc, target);
-            bool holdFd = needsHoldFd(res, rc, target);
-            std::string defaultValueStr;
-            if (hasDefault) {
-                defaultValueStr = makeDefaultValueString(res, rc, target);
+
+            // libperfmgr doesn't support multiple values for one node within one action
+            auto it = std::find_if(actionsJson.begin(), actionsJson.end(), [&](const json& elem) {
+                return elem.value("Node", std::string{}) == nodeName;
+            });
+
+            if (it != actionsJson.end()) {
+                json& action = *it;
+                action["Value"] = makeValueString(res, rc, target, action["Value"]);
+            } else {
+                json action;
+                action["PowerHint"] = powerHint;
+                action["Node"] = nodeName;
+                action["Value"] = makeValueString(res, rc, target, "");
+                action["Duration"] = duration;
+                actionsJson.push_back(action);
             }
 
-            // Update / create NodeInfo
+            // prepare the node information for later except for value which could still change in
+            // this loop when multiple resources adjust the same node
             NodeInfo& n = nodeTable[nodeName];
             if (n.name.empty()) {
-                n.name = nodeName;
-                n.path = nodePath;
-                n.defaultValue = defaultValueStr;
-                n.hasDefault = hasDefault;
-                n.holdFd = holdFd;
-            }
-            n.values.insert(valueStr);
+                bool hasDefault = rc.node.rfind("SPECIAL_NODE", 0) != 0 &&
+                                  kNoDefaultNodes.find(rc.node) == kNoDefaultNodes.end();
 
-            json action;
-            action["PowerHint"] = powerHint;
-            action["Node"] = nodeName;
-            action["Value"] = valueStr;
-            action["Duration"] = duration;
-            actionsJson.push_back(action);
+                n.name = nodeName;
+                n.path = makeNodePath(res, rc, target);
+                n.hasDefault = hasDefault;
+                n.defaultValue = hasDefault ? makeDefaultValueString(res, rc, target) : "";
+                n.holdFd = kHoldFdNodes.find(rc.node) != kHoldFdNodes.end();
+                n.writeOnly = kWriteOnlyNodes.find(rc.node) != kWriteOnlyNodes.end();
+            }
+        }
+        // Now the final value for the node during this boost is determined
+        for (const auto& action : actionsJson) {
+            NodeInfo& n = nodeTable[action["Node"]];
+            n.values.insert(action["Value"]);
         }
     }
 
@@ -589,6 +648,9 @@ int main(int argc, char* argv[]) {
         }
         if (info.holdFd) {
             node["HoldFd"] = true;
+        }
+        if (info.writeOnly) {
+            node["WriteOnly"] = true;
         }
 
         nodesJson.push_back(node);

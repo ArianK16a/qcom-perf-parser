@@ -209,6 +209,7 @@ struct NodeInfo {
     std::set<std::string> values;
     bool hasDefault;
     bool holdFd;
+    bool writeOnly;
 };
 
 enum ClusterType { LITTLE, BIG, PRIME };
