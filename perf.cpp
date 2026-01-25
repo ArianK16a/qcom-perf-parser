@@ -81,8 +81,8 @@ struct pair_hash {
 
 static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
         {{0x00001080, 1, 120, "volcano"}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
-        // {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
-        // {{0x00001337, -1, -1, "volcano"}, "CAMERA"},
+        {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        {{0x00001337, -1, -1, "volcano"}, "CAMERA"},
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
@@ -110,8 +110,8 @@ std::string getPowerHintName(const PerfBoost& boost) {
 
 const std::unordered_set<std::string> kNoDefaultNodes = {
         "/dev/cpu_dma_latency",
-        "/sys/kernel/msm_performance/parameters/cpu_min_freq",
-        "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+        // "/sys/kernel/msm_performance/parameters/cpu_min_freq",
+        // "/sys/kernel/msm_performance/parameters/cpu_max_freq",
 };
 
 const std::unordered_set<std::string> kHoldFdNodes = {
@@ -121,6 +121,11 @@ const std::unordered_set<std::string> kHoldFdNodes = {
 const std::unordered_set<std::string> kWriteOnlyNodes = {
         "/sys/kernel/msm_performance/parameters/cpu_min_freq",
         "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+};
+
+// These nodes are conceptionally unsupported by libperfmgr :(
+const std::unordered_set<std::string> kUnsupportedNodes = {
+        "/proc/sys/walt/sched_per_task_boost",
 };
 
 // Fixed names (not depending on cluster)
@@ -133,9 +138,9 @@ const std::unordered_map<std::string, std::string> kFixedNodeNames = {
 // Cluster-dependent names
 const std::unordered_map<std::string, std::array<const char*, 3>> kClusterNodeNames = {
         {"/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq",
-         {"WaltAdaptiveHighFreqBig", "WaltAdaptiveHighFreqLittle", "WaltAdaptiveHighFreqPrime"}},
+         {"WaltAdaptiveHighFreqLittle", "WaltAdaptiveHighFreqBig", "WaltAdaptiveHighFreqPrime"}},
         {"/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq",
-         {"WaltAdaptiveLowFreqBig", "WaltAdaptiveLowFreqLittle", "WaltAdaptiveLowFreqPrime"}},
+         {"WaltAdaptiveLowFreqLittle", "WaltAdaptiveLowFreqBig", "WaltAdaptiveLowFreqPrime"}},
 };
 
 std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
@@ -259,8 +264,7 @@ std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc
                                    const TargetInfo& target) {
     const ClusterType cluster = (ClusterType)res.cluster;
 
-    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" ||
-        rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
         return buildMsmPerfValueString(std::map<int, int>{
                 {0, 0},
                 {1, 0},
@@ -270,6 +274,17 @@ std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc
                 {5, 0},
                 {6, 0},
                 {7, 0},
+        });
+    } else if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+        return buildMsmPerfValueString(std::map<int, int>{
+                {0, find_closest_freq_for_cpu(0, INT_MAX)},
+                {1, find_closest_freq_for_cpu(1, INT_MAX)},
+                {2, find_closest_freq_for_cpu(2, INT_MAX)},
+                {3, find_closest_freq_for_cpu(3, INT_MAX)},
+                {4, find_closest_freq_for_cpu(4, INT_MAX)},
+                {5, find_closest_freq_for_cpu(5, INT_MAX)},
+                {6, find_closest_freq_for_cpu(6, INT_MAX)},
+                {7, find_closest_freq_for_cpu(7, INT_MAX)},
         });
     }
     return readNodeDefaultValueViaAdb(makeNodePath(res, rc, target));
@@ -588,6 +603,15 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
+            if (kUnsupportedNodes.find(rc.node) != kUnsupportedNodes.end()) {
+                continue;
+            }
+
+            // TODO support some of these
+            if (rc.node.rfind("SPECIAL_NODE", 0) == 0) {
+                continue;
+            }
+
             std::string nodeName = makeNodeName(res, rc, target);
 
             // libperfmgr doesn't support multiple values for one node within one action
@@ -629,7 +653,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    for (const auto& [name, info] : nodeTable) {
+    for (auto& [name, info] : nodeTable) {
         json node;
         node["Name"] = info.name;
         node["Path"] = info.path;
@@ -637,6 +661,8 @@ int main(int argc, char* argv[]) {
         json valuesJson = json::array();
         if (info.hasDefault) {
             valuesJson.push_back(info.defaultValue);
+            // libperfmgr doesn't like duplicate values
+            info.values.erase(info.defaultValue);
         }
         for (const auto& v : info.values) {
             valuesJson.push_back(v);
