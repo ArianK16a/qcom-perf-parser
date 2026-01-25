@@ -205,9 +205,10 @@ struct HintKeyHash {
 struct NodeInfo {
     std::string name;
     std::string path;
+    std::string defaultValue;
     std::set<std::string> values;
-    int defaultIndex = 0;
-    bool resetOnInit = true;
+    bool hasDefault;
+    bool holdFd;
 };
 
 enum ClusterType { LITTLE, BIG, PRIME };

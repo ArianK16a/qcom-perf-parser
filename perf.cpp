@@ -1,15 +1,37 @@
 #include "perf.h"
+#include <cstdio>
 #include <cstdlib>
 #include <format>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <string>
+#include "cpu_freq_utils.h"
 #include "json.hpp"
 #include "tinyxml2.h"
-#include "cpu_freq_utils.h"
 
-using nlohmann::json;
+using json = nlohmann::ordered_json;
 using namespace tinyxml2;
+
+std::string readNodeDefaultValueViaAdb(const std::string& path) {
+    std::string cmd = "adb shell \"cat " + path + "\"";
+
+    std::array<char, 256> buffer;
+    std::string result;
+
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return "";
+
+    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+        result += buffer.data();
+    }
+    pclose(pipe);
+
+    if (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
+        result.pop_back();
+    }
+    return result;
+}
 
 std::string trim(const std::string& str) {
     size_t first = str.find_first_not_of(" \t");
@@ -58,12 +80,12 @@ struct pair_hash {
 
 static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
         {{0x00001080, 1, 120, "volcano"}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
-        {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        // {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
+        // {{0x00001337, -1, -1, "volcano"}, "CAMERA"},
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
-int clusterToCpuIndex(const TargetInfo& target, int clusterId)
-{
+int clusterToCpuIndex(const TargetInfo& target, int clusterId) {
     int cpuIndex = 0;
 
     for (const auto& c : target.clusters) {
@@ -89,14 +111,14 @@ std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const Ta
     const int cluster = res.cluster;
 
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq") {
-        if (cluster == 0) return "CPUBoostMinFreqBig";
-        if (cluster == 1) return "CPUBoostMinFreqLittle";
-        if (cluster == 2) return "CPUBoostMinFreqPrime";
+        if (cluster == 0) return "MSMPerfMinFreqBig";
+        if (cluster == 1) return "MSMPerfMinFreqLittle";
+        if (cluster == 2) return "MSMPerfMinFreqPrime";
     }
     if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
-        if (cluster == 0) return "CPUBoostMaxFreqBig";
-        if (cluster == 1) return "CPUBoostMaxFreqLittle";
-        if (cluster == 2) return "CPUBoostMaxFreqPrime";
+        if (cluster == 0) return "MSMPerfMaxFreqBig";
+        if (cluster == 1) return "MSMPerfMaxFreqLittle";
+        if (cluster == 2) return "MSMPerfMaxFreqPrime";
     }
 
     if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq") {
@@ -108,6 +130,10 @@ std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const Ta
         if (cluster == 0) return "WaltAdaptiveLowFreqBig";
         if (cluster == 1) return "WaltAdaptiveLowFreqLittle";
         if (cluster == 2) return "WaltAdaptiveLowFreqPrime";
+    }
+
+    if (rc.node == "/dev/cpu_dma_latency") {
+        return "PMQoSCpuDmaLatency";
     }
 
     // Fallback: derive name from path (replace / with _ etc.)
@@ -137,7 +163,8 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
 }
 
 #define FREQ_MULTIPLICATION_FACTOR 1000ul
-std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int value) {
+std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int value,
+                                   bool forceValue = false) {
     int startCpu = clusterToCpuIndex(target, clusterId);
 
     auto it = std::find_if(target.clusters.begin(), target.clusters.end(),
@@ -147,13 +174,17 @@ std::string makeMsmPerfValueString(const TargetInfo& target, int clusterId, int 
         return "ERROR";
     }
 
-    int requestedFrequency = find_closest_freq_for_cpu(startCpu, (value * FREQ_MULTIPLICATION_FACTOR));
+    int requestedFrequency =
+            forceValue ? value
+                       : find_closest_freq_for_cpu(startCpu, (value * FREQ_MULTIPLICATION_FACTOR));
     std::ostringstream oss;
     for (int i = 0; i < it->numCores; ++i) {
         if (i > 0) oss << ' ';
         oss << (startCpu + i) << ':' << requestedFrequency;
     }
 
+    std::cout << "returning " << oss.str() << "for cluster: " << clusterId
+              << " with value: " << value << std::endl;
     return oss.str();
 }
 
@@ -168,6 +199,32 @@ std::string makeValueString(const Resource& res, const ResourceConfig& rc,
     }
 
     return std::to_string(v);
+}
+
+bool hasDefaultValue(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
+    if (rc.node == "/dev/cpu_dma_latency") {
+        return false;
+    }
+    if (rc.node.rfind("SPECIAL_NODE", 0) == 0) {
+        return false;
+    }
+    return true;
+}
+
+bool needsHoldFd(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
+    if (rc.node == "/dev/cpu_dma_latency") {
+        return true;
+    }
+    return false;
+}
+std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc,
+                                   const TargetInfo& target) {
+    const ClusterType cluster = (ClusterType)res.cluster;
+
+    if (rc.node == "/sys/kernel/msm_performance/parameters/cpu_min_freq" || rc.node == "/sys/kernel/msm_performance/parameters/cpu_max_freq") {
+        return makeMsmPerfValueString(target, cluster, 0, true);
+    }
+    return readNodeDefaultValueViaAdb(makeNodePath(res, rc, target));
 }
 
 int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoosts) {
@@ -186,7 +243,7 @@ int parsePerfBoostsConfig(XMLElement* configs, std::vector<PerfBoost>* perfBoost
         boost.id = id ? strtol(id, nullptr, 16) : -1;
         boost.type = type ? atoi(type) : -1;
         boost.enable = (enable && strcmp(enable, "true") == 0);
-        boost.timeout = timeout ? atoi(timeout) : -1;
+        boost.timeout = timeout ? atoi(timeout) : 0;
         boost.target = target ? target : "UNSET";
         boost.kernel = kernel ? kernel : "UNSET";
         boost.fps = fpsStr ? atoi(fpsStr) : -1;
@@ -486,23 +543,29 @@ int main(int argc, char* argv[]) {
             std::string nodeName = makeNodeName(res, rc, target);
             std::string nodePath = makeNodePath(res, rc, target);
             std::string valueStr = makeValueString(res, rc, target);
+            bool hasDefault = hasDefaultValue(res, rc, target);
+            bool holdFd = needsHoldFd(res, rc, target);
+            std::string defaultValueStr;
+            if (hasDefault) {
+                defaultValueStr = makeDefaultValueString(res, rc, target);
+            }
 
             // Update / create NodeInfo
             NodeInfo& n = nodeTable[nodeName];
             if (n.name.empty()) {
                 n.name = nodeName;
                 n.path = nodePath;
-                n.defaultIndex = 0;
-                // TODO not sure about this?
-                n.resetOnInit = true;
+                n.defaultValue = defaultValueStr;
+                n.hasDefault = hasDefault;
+                n.holdFd = holdFd;
             }
             n.values.insert(valueStr);
 
             json action;
             action["PowerHint"] = powerHint;
             action["Node"] = nodeName;
-            action["Duration"] = duration;
             action["Value"] = valueStr;
+            action["Duration"] = duration;
             actionsJson.push_back(action);
         }
     }
@@ -513,13 +576,20 @@ int main(int argc, char* argv[]) {
         node["Path"] = info.path;
 
         json valuesJson = json::array();
+        if (info.hasDefault) {
+            valuesJson.push_back(info.defaultValue);
+        }
         for (const auto& v : info.values) {
             valuesJson.push_back(v);
         }
         node["Values"] = valuesJson;
-
-        node["DefaultIndex"] = info.defaultIndex;
-        node["ResetOnInit"] = info.resetOnInit;
+        if (info.hasDefault) {
+            node["DefaultIndex"] = 0;
+            node["ResetOnInit"] = true;
+        }
+        if (info.holdFd) {
+            node["HoldFd"] = true;
+        }
 
         nodesJson.push_back(node);
     }
