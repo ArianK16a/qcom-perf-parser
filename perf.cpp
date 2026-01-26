@@ -804,7 +804,8 @@ int main(int argc, char* argv[]) {
                     action["PowerHint"] = powerHint;
                     action["Node"] = nodeName;
                     action["Value"] = makeValueString(res, rc, target, "");
-                    action["Duration"] = duration;
+                    // Overwrite the camera launch timeout as it's unset in qcom configs
+                    action["Duration"] = powerHint == "CAMERA_LAUNCH" ? 1000 : duration;
                     actionsJson.push_back(action);
                 }
 
