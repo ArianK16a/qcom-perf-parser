@@ -184,6 +184,8 @@ const std::unordered_set<std::string> kHoldFdNodes = {
 const std::unordered_set<std::string> kWriteOnlyNodes = {
         "/sys/kernel/msm_performance/parameters/cpu_min_freq",
         "/sys/kernel/msm_performance/parameters/cpu_max_freq",
+        "/proc/sys/walt/sched_downmigrate",
+        "/proc/sys/walt/sched_upmigrate",
 };
 
 // These nodes are conceptionally unsupported by libperfmgr :(
@@ -359,6 +361,18 @@ std::string makeValueString(const Resource& res, const ResourceConfig& rc, const
         return std::to_string(find_closest_freq_for_cpu(clusterToCpuIndex(target, cluster), v));
     }
 
+    if (res.major == 0x3 && res.minor == 0x38) {
+        std::istringstream iss(previousValue.empty()
+                                       ? readNodeValueViaAdb(makeNodePath(res, rc, target))
+                                       : previousValue);
+        std::string first, second;
+        if (!(iss >> first >> second)) {
+            return "ERROR parsing value";
+        }
+
+        return cluster <= 1 ? std::to_string(v) + " " + second : first + " " + std::to_string(v);
+    }
+
     return std::to_string(v);
 }
 
@@ -389,6 +403,17 @@ std::string makeDefaultValueString(const Resource& res, const ResourceConfig& rc
                 {7, find_closest_freq_for_cpu(7, INT_MAX)},
         });
     }
+
+    if (res.major == 0x3 && res.minor == 0x38) {
+        std::istringstream iss(readNodeValueViaAdb(makeNodePath(res, rc, target)));
+        std::string first, second;
+
+        if (!std::getline(iss, first, '\t')) return "ERROR";
+        if (!std::getline(iss, second, '\t')) return "ERROR";
+
+        return first + " " + second;
+    }
+
     return readNodeValueViaAdb(makeNodePath(res, rc, target));
 }
 
@@ -446,6 +471,33 @@ std::vector<int> toIntVector(const std::string& s) {
     }
 
     return result;
+}
+
+std::vector<std::pair<Resource, ResourceConfig>> expandResource(const Resource& res,
+                                                                const ResourceConfig& rc,
+                                                                const TargetInfo& target) {
+    std::vector<std::pair<Resource, ResourceConfig>> resPairs;
+    if (res.major == 0x3 && (res.minor == 0x3d || res.minor == 0x38)) {
+        auto addMigrateResource = [&](uint16_t value, const char* direction) {
+            Resource resource{res.opcode, value};
+            std::string path = rc.node;
+            if (auto pos = path.find("%s"); pos != std::string::npos) {
+                path.replace(pos, 2,
+                             (res.minor == 0x3d) ? std::string("sched_group_") + direction
+                                                 : std::string("sched_") + direction);
+            }
+
+            ResourceConfig config{rc.major, rc.minor, rc.supported, std::move(path)};
+            resPairs.emplace_back(resource, std::move(config));
+        };
+
+        // use the helper for both cases
+        addMigrateResource((res.value >> 16) & 0xFFFF, "upmigrate");
+        addMigrateResource(res.value & 0xFFFF, "downmigrate");
+    } else {
+        resPairs.push_back(std::make_pair(res, rc));
+    }
+    return resPairs;
 }
 
 int main(int argc, char* argv[]) {
@@ -709,37 +761,44 @@ int main(int argc, char* argv[]) {
                 continue;
             }
 
-            std::string nodeName = makeNodeName(res, rc, target);
+            // Some resources require multiple paths, so expand them into multiple ones
+            for (const auto& pair : expandResource(res, rc, target)) {
+                Resource res = std::get<Resource>(pair);
+                ResourceConfig rc = std::get<ResourceConfig>(pair);
+                std::string nodeName = makeNodeName(res, rc, target);
 
-            // libperfmgr doesn't support multiple values for one node within one action
-            auto it = std::find_if(actionsJson.begin(), actionsJson.end(), [&](const json& elem) {
-                return elem.value("PowerHint", std::string{}) == powerHint && elem.value("Node", std::string{}) == nodeName;
-            });
+                // libperfmgr doesn't support multiple values for one node within one action
+                auto it =
+                        std::find_if(actionsJson.begin(), actionsJson.end(), [&](const json& elem) {
+                            return elem.value("PowerHint", std::string{}) == powerHint &&
+                                   elem.value("Node", std::string{}) == nodeName;
+                        });
 
-            if (it != actionsJson.end()) {
-                json& action = *it;
-                action["Value"] = makeValueString(res, rc, target, action["Value"]);
-            } else {
-                json action;
-                action["PowerHint"] = powerHint;
-                action["Node"] = nodeName;
-                action["Value"] = makeValueString(res, rc, target, "");
-                action["Duration"] = duration;
-                actionsJson.push_back(action);
-            }
+                if (it != actionsJson.end()) {
+                    json& action = *it;
+                    action["Value"] = makeValueString(res, rc, target, action["Value"]);
+                } else {
+                    json action;
+                    action["PowerHint"] = powerHint;
+                    action["Node"] = nodeName;
+                    action["Value"] = makeValueString(res, rc, target, "");
+                    action["Duration"] = duration;
+                    actionsJson.push_back(action);
+                }
 
-            // prepare the node information for later except for value which could still change in
-            // this loop when multiple resources adjust the same node
-            NodeInfo& n = nodeTable[nodeName];
-            if (n.name.empty()) {
-                bool hasDefault = kNoDefaultNodes.find(rc.node) == kNoDefaultNodes.end();
+                // prepare the node information for later except for value which could still change
+                // in this loop when multiple resources adjust the same node
+                NodeInfo& n = nodeTable[nodeName];
+                if (n.name.empty()) {
+                    bool hasDefault = kNoDefaultNodes.find(rc.node) == kNoDefaultNodes.end();
 
-                n.name = nodeName;
-                n.path = makeNodePath(res, rc, target);
-                n.hasDefault = hasDefault;
-                n.defaultValue = hasDefault ? makeDefaultValueString(res, rc, target) : "";
-                n.holdFd = kHoldFdNodes.find(rc.node) != kHoldFdNodes.end();
-                n.writeOnly = kWriteOnlyNodes.find(rc.node) != kWriteOnlyNodes.end();
+                    n.name = nodeName;
+                    n.path = makeNodePath(res, rc, target);
+                    n.hasDefault = hasDefault;
+                    n.defaultValue = hasDefault ? makeDefaultValueString(res, rc, target) : "";
+                    n.holdFd = kHoldFdNodes.find(rc.node) != kHoldFdNodes.end();
+                    n.writeOnly = kWriteOnlyNodes.find(rc.node) != kWriteOnlyNodes.end();
+                }
             }
         }
         // Now the final value for the node during this boost is determined
