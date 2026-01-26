@@ -258,6 +258,11 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
                "/core_ctl/enable";
     }
 
+    if (rc.node == "/sys/devices/system/cpu/cpu0/cpufreq/walt/pl") {
+        return "/sys/devices/system/cpu/cpu" + std::to_string(clusterToCpuIndex(target, cluster)) +
+               "/cpufreq/walt/pl";
+    }
+
     if (rc.node == "SPECIAL_NODE - lock_min_cores") {
         return "/sys/devices/system/cpu/cpu" + std::to_string(clusterToCpuIndex(target, cluster)) +
                "/core_ctl/min_cpus";
