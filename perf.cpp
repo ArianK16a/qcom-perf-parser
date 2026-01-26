@@ -520,7 +520,9 @@ std::vector<std::pair<Resource, ResourceConfig>> expandResource(const Resource& 
 
         addMigrateResource((res.value >> 16) & 0xFFFF, "upmigrate");
         addMigrateResource(res.value & 0xFFFF, "downmigrate");
-    } else if (res.major == 0xc && res.minor == 0x9) {
+    } else if ((res.major == 0xc &&
+                (res.minor == 0x2 || res.minor == 0x9 || res.minor == 0x13 || res.minor == 0x14)) ||
+               (res.major == 0x6 && (res.minor == 0xe || res.minor == 0x17))) {
         auto addResPair = [&](const char* fileName) {
             ResourceConfig config{rc.major, rc.minor, rc.supported, rc.node + "/" + fileName};
             resPairs.emplace_back(res, std::move(config));
