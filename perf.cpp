@@ -198,7 +198,6 @@ const std::unordered_map<std::string, std::string> kFixedNodeNames = {
         {"/sys/kernel/msm_performance/parameters/cpu_min_freq", "MSMPerfMinFreq"},
         {"/sys/kernel/msm_performance/parameters/cpu_max_freq", "MSMPerfMaxFreq"},
         {"/dev/cpu_dma_latency", "PMQoSCpuDmaLatency"},
-        {"SPECIAL_NODE - lock_min_cores", "CoreCtlMinCores"},
 };
 
 // Cluster-dependent names
@@ -207,6 +206,11 @@ const std::unordered_map<std::string, std::array<const char*, 3>> kClusterNodeNa
          {"WaltAdaptiveHighFreqLittle", "WaltAdaptiveHighFreqBig", "WaltAdaptiveHighFreqPrime"}},
         {"/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq",
          {"WaltAdaptiveLowFreqLittle", "WaltAdaptiveLowFreqBig", "WaltAdaptiveLowFreqPrime"}},
+        {"/sys/devices/system/cpu/cpu0/core_ctl/enable",
+         {"CoreCtlEnableLittle", "CoreCtlEnableBig", "CoreCtlEnablePrime"}},
+        {"SPECIAL_NODE - lock_min_cores",
+         {"CoreCtlMinCoresLittle", "CoreCtlMinCoresBig", "CoreCtlMinCoresPrime"}},
+
 };
 
 std::string makeNodeName(const Resource& res, const ResourceConfig& rc, const TargetInfo& target) {
@@ -248,6 +252,12 @@ std::string makeNodePath(const Resource& res, const ResourceConfig& rc, const Ta
         return "/sys/devices/system/cpu/cpufreq/policy" +
                std::to_string(clusterToCpuIndex(target, cluster)) + "/walt/adaptive_low_freq";
     }
+
+    if (rc.node == "/sys/devices/system/cpu/cpu0/core_ctl/enable") {
+        return "/sys/devices/system/cpu/cpu" + std::to_string(clusterToCpuIndex(target, cluster)) +
+               "/core_ctl/enable";
+    }
+
     if (rc.node == "SPECIAL_NODE - lock_min_cores") {
         return "/sys/devices/system/cpu/cpu" + std::to_string(clusterToCpuIndex(target, cluster)) +
                "/core_ctl/min_cpus";
