@@ -354,6 +354,11 @@ std::string makeValueString(const Resource& res, const ResourceConfig& rc, const
         return std::to_string(getNextGpuFreq(v * 1000000));
     }
 
+    if (rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_high_freq" ||
+        rc.node == "/sys/devices/system/cpu/cpufreq/policy0/walt/adaptive_low_freq") {
+        return std::to_string(find_closest_freq_for_cpu(clusterToCpuIndex(target, cluster), v));
+    }
+
     return std::to_string(v);
 }
 
