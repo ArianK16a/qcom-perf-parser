@@ -501,9 +501,16 @@ std::vector<std::pair<Resource, ResourceConfig>> expandResource(const Resource& 
             resPairs.emplace_back(resource, std::move(config));
         };
 
-        // use the helper for both cases
         addMigrateResource((res.value >> 16) & 0xFFFF, "upmigrate");
         addMigrateResource(res.value & 0xFFFF, "downmigrate");
+    } else if (res.major == 0xc && res.minor == 0x9) {
+        auto addResPair = [&](const char* fileName) {
+            ResourceConfig config{rc.major, rc.minor, rc.supported, rc.node + "/" + fileName};
+            resPairs.emplace_back(res, std::move(config));
+        };
+        addResPair("hyst_length");
+        addResPair("hist_memory");
+        addResPair("hyst_trigger_count");
     } else {
         resPairs.push_back(std::make_pair(res, rc));
     }
