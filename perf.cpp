@@ -140,12 +140,24 @@ struct pair_hash {
     }
 };
 
+/**
+ * maps <qcom boost id, type, fps, target> to the PowerHint name
+ */
 static const std::unordered_map<HintKey, std::string, HintKeyHash> kHintToPowerHint = {
         {{0x00001080, 1, 120, "volcano"}, "INTERACTION"},  // VENDOR_HINT_SCROLL_BOOST
         {{0x00001081, 10, -1, "volcano"}, "LAUNCH"},       // VENDOR_HINT_FIRST_LAUNCH_BOOST
-        {{0x00001333, -1, -1, "volcano"}, "CAMERA_LAUNCH"},
-        // {{0x00001339, -1, -1, "volcano"}, "CAMERA_SHOT"},
         {{0x00001206, -1, -1, "volcano"}, "SUSTAINED_PERFORMANCE"},
+
+
+        {{0x00001330, -1, -1, "volcano"}, "CAMERA_STREAMING_LOW"},
+        {{0x00001331, -1, -1, "volcano"}, "CAMERA_STREAMING_MID"},
+        {{0x00001332, -1, -1, "volcano"}, "CAMERA_STREAMING_HIGH"},
+        // {{0x00001333, -1, -1, "volcano"}, "CAMERA_HFR"},
+        // {{0x00001334, -1, -1, "volcano"}, "CAMERA_ENCODE_HFR"},
+
+        {{0x00001337, -1, -1, "volcano"}, "CAMERA_LAUNCH"},
+        // {{0x00001338, -1, -1, "volcano"}, "CAMERA_CLOSE"},
+        // {{0x00001339, -1, -1, "volcano"}, "CAMERA_SNAPSHOT"},
         // { { another_id, another_type, another_fps }, "LAUNCH" },
 };
 
