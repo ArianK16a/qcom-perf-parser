@@ -16,6 +16,8 @@ resource_resolvers: Dict[ResourceKey, ResourceResolver] = {
     (0x2, 0x1): msm_perf.resolve_msm_perf,  # msm_perf - max freq
     (0x2, 0x2): walt.resolve_walt_path,
     (0x2, 0x3): walt.resolve_walt_path,
+    (0x2, 0x5): walt.resolve_walt_path, # walt - adaptive_level_1
+    (0x3, 0x1A): walt.resolve_walt_path, # walt - boost
     (0x3, 0x20): lambda x: [],  # unsupported - sched_per_task_boost
     (0x3, 0x38): sched_migrate.resolve_sched_migrate,  # sched - up/down migrate
     (0x3, 0x3D): sched_migrate.resolve_sched_group_migrate,  # sched - group up/down migrate
