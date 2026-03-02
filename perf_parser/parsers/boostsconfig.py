@@ -1,4 +1,5 @@
 import sys
+import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional, Tuple
 
@@ -11,7 +12,9 @@ def parse_resources(resources_str: str) -> List[Tuple[int, int]]:
     "0x40C00000, 0x1, 0x40804000, 0xFFF, ..."
     into a list of (int, int) tuples.
     """
-    nums = [int(tok.strip(), 0) for tok in resources_str.split(',') if tok.strip()]
+    # Accept comma/space/newline separated values; extract all ints/hex tokens robustly.
+    toks = re.findall(r'0x[0-9a-fA-F]+|\d+', resources_str or "")
+    nums = [int(tok, 0) for tok in toks]
     return [(nums[i], nums[i + 1]) for i in range(0, len(nums), 2)]
 
 
